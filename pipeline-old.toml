@@ -1,0 +1,74 @@
+# Pipeline manifest — SPLIT_OLD
+# Data: data/{train,probe,fulltrain,qual}/   Outputs: preds/, features/
+
+[split]
+name         = "old"
+tr           = "train"
+pr           = "probe"
+fulltrain_tr = "fulltrain"
+fulltrain_pr = "qual"
+preds        = "preds"
+features     = "features"
+
+# --- Defaults per stage kind ---
+
+[defaults.model]
+inputs_from = ["convert_raw"]
+outputs = [
+    "{preds}/{name}.{pr}.npy",
+    "{preds}/{name}.{fulltrain_pr}.npy",
+    "{preds}/{name}.cfg",
+]
+cmd = "./target/release/runner --runner {runner} --name {name} --config {config} --target {target} --split {split.name}"
+
+[defaults.sim]
+inputs_from = ["convert_raw"]
+outputs = ["sim/{name}.{tr}.npy", "sim/{name}.{fulltrain_tr}.npy"]
+
+[defaults.blend]
+outputs = ["{preds}/{name}.{pr}.npy", "{preds}/{name}.{fulltrain_pr}.npy"]
+
+# --- Data preparation ---
+
+[stages.convert_raw]
+inputs  = ["raw/training_set.tar", "raw/probe.txt", "raw/qualifying.txt", "scripts/convert_old.py"]
+outputs = ["data/{tr}/", "data/{pr}/", "data/{fulltrain_tr}/", "data/{fulltrain_pr}/"]
+cmd = "python scripts/convert_old.py"
+
+# --- Base predictors (trained on raw ratings) ---
+[stages."tsvd-2048"] kind="model" runner="tx"   config="configs/old/tsvd-2048.toml" target="rtg"
+[stages."asym-16"]   kind="model" runner="asym" config="configs/old/asym-16.toml"   target="rtg"
+[stages."rbm-50"]    kind="model" runner="rx"   config="configs/old/rbm-50.toml"    target="rtg"
+
+# --- Similarity matrix (consumed by knn-* models) ---
+[stages.bin_supp] kind="sim" cmd="./target/release/nbstats --stat supp --split {split.name}"
+
+# --- Residual chains (target = "w*<stage>" auto-extends inputs_from) ---
+[stages."tsvd-2048__knn-25c"] kind="model" runner="knns" config="configs/old/knn-25c.toml" target="1.0*tsvd-2048" deps=["bin_supp"]
+[stages."asym-16__mf-64"]     kind="model" runner="mf"   config="configs/old/mf-64.toml"   target="1.0*asym-16"
+
+# --- FWLS features (per-rating feature columns; explicit outputs) ---
+[stages.fwls_features]
+inputs_from = ["convert_raw"]
+outputs = [
+    "{features}/fwls_user_cnt.{pr}.npy",   "{features}/fwls_item_cnt.{pr}.npy",
+    "{features}/fwls_user_cnt.{fulltrain_pr}.npy", "{features}/fwls_item_cnt.{fulltrain_pr}.npy",
+]
+cmd = "./target/release/fwls_features --split {split.name}"
+
+# --- First-level blends ---
+[stages.blend_ridge]
+kind="blend" config="configs/old/blend_ridge.toml"
+inputs_from=["tsvd-2048", "tsvd-2048__knn-25c", "asym-16", "asym-16__mf-64", "rbm-50"]
+cmd="python blending/blend.py --config {config} --split {split.name}"
+
+[stages.fwls_blend]
+kind="blend" config="configs/old/fwls.toml"
+inputs_from=["fwls_features", "tsvd-2048", "asym-16", "rbm-50"]
+cmd="python blending/fwls.py --config {config} --split {split.name}"
+
+# --- Final ensemble ---
+[stages.final]
+kind="blend" config="configs/old/final.toml"
+inputs_from=["blend_ridge", "fwls_blend"]
+cmd="python blending/final.py --config {config} --split {split.name}"
