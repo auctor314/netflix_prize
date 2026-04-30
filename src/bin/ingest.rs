@@ -1,3 +1,8 @@
+//! Convert the raw Netflix Prize files in `data/raw/` into the four numpy
+//! datasets the rest of the pipeline uses: `train`, `probe`, `fulltrain`, `qual`.
+//! Qual ratings and is_test (not included in the raw archive) are read from
+//! `data/qual_ratings/qual_ratings.csv`.
+
 use indicatif::ProgressIterator;
 use ndarray::Array1;
 use ndarray_npy::write_npy;
