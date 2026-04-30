@@ -9,9 +9,13 @@ const N_USERS: usize = 480_189;
 const N_ITEMS: usize = 17_770;
 const N_TOTAL: usize = 100_480_507;
 const N_PROBE: usize = 1_408_395;
+const N_QUAL: usize = 2_817_131;
 const RAW_DIR: &str = "data/raw";
+const QUAL_RATINGS_CSV: &str = "data/qual_ratings/qual_ratings.csv";
 const TRAIN_OUT: &str = "data/train";
 const PROBE_OUT: &str = "data/probe";
+const FULLTRAIN_OUT: &str = "data/fulltrain";
+const QUAL_OUT: &str = "data/qual";
 
 const YEAR_OFFSETS: [i32; 8] = [0, 365, 731, 1096, 1461, 1826, 2192, 2557];
 const MONTH_OFFSETS_NORMAL: [i32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
@@ -78,7 +82,7 @@ fn read_lines<F: FnMut(&[u8])>(path: &str, mut handler: F) {
 
 fn main() {
     // ---- Phase 1: parse combined_data_*.txt ----
-    println!("Phase 1/8: Parse combined_data");
+    println!("Phase 1/10: Parse combined_data");
     let mut user_ids: Vec<u32> = Vec::with_capacity(N_TOTAL);
     let mut item_ids: Vec<u16> = Vec::with_capacity(N_TOTAL);
     let mut ratings: Vec<i8> = Vec::with_capacity(N_TOTAL);
@@ -111,7 +115,7 @@ fn main() {
     assert_eq!(user_ids.len(), N_TOTAL);
 
     // ---- Phase 2: user remapping + index conversion ----
-    println!("Phase 2/8: Build user remapping & remap IDs");
+    println!("Phase 2/10: Build user remapping & remap IDs");
     let mut sorted_uids: Vec<u32> = user_ids.iter().copied().collect();
     sorted_uids.sort_unstable();
     sorted_uids.dedup();
@@ -133,7 +137,7 @@ fn main() {
     drop(item_ids);
 
     // ---- Phase 3: parse probe.txt ----
-    println!("Phase 3/8: Parse probe.txt");
+    println!("Phase 3/10: Parse probe.txt");
     let mut probe_set: HashSet<u64> = HashSet::with_capacity(N_PROBE);
     let mut probe_groups: Vec<Vec<i32>> = (0..N_ITEMS).map(|_| Vec::new()).collect();
     let mut current_iidx: i16 = 0;
@@ -148,10 +152,31 @@ fn main() {
         }
     });
     assert_eq!(probe_set.len(), N_PROBE);
+
+    // ---- Phase 4: parse qualifying.txt (push directly in parse order) ----
+    println!("Phase 4/10: Parse qualifying.txt");
+    let mut qual_user_idxs: Vec<i32> = Vec::with_capacity(N_QUAL);
+    let mut qual_item_idxs: Vec<i16> = Vec::with_capacity(N_QUAL);
+    let mut qual_dates: Vec<i16> = Vec::with_capacity(N_QUAL);
+    let mut current_iidx: i16 = 0;
+    read_lines(&format!("{}/qualifying.txt", RAW_DIR), |line| {
+        if line.last() == Some(&b':') {
+            current_iidx = (parse_u32(&line[..line.len() - 1]) as i16) - 1;
+        } else {
+            let comma = line.iter().position(|&c| c == b',').unwrap();
+            let uid = parse_u32(&line[..comma]);
+            let uidx = uid_to_uidx[&uid];
+            let date = parse_date_bytes(&line[comma + 1..]);
+            qual_user_idxs.push(uidx);
+            qual_item_idxs.push(current_iidx);
+            qual_dates.push(date);
+        }
+    });
+    assert_eq!(qual_user_idxs.len(), N_QUAL);
     drop(uid_to_uidx);
 
-    // ---- Phase 4: split mask + probe lookup ----
-    println!("Phase 4/8: Split train/probe");
+    // ---- Phase 5: split mask + probe lookup ----
+    println!("Phase 5/10: Split train/probe");
     let mut is_probe: Vec<bool> = Vec::with_capacity(N_TOTAL);
     let mut probe_lookup: HashMap<u64, (i8, i16)> = HashMap::with_capacity(N_PROBE);
     for k in (0..N_TOTAL).progress() {
@@ -166,31 +191,40 @@ fn main() {
 
     let n_train = N_TOTAL - N_PROBE;
 
-    // ---- Phase 5: build & sort train ----
-    println!("Phase 5/8: Build & sort train");
-    let mut train_idx: Vec<usize> = Vec::with_capacity(n_train);
-    for k in (0..N_TOTAL).progress() {
+    // ---- Phase 6: sort all + build train + fulltrain ----
+    println!("Phase 6/10: Sort all + build train + fulltrain");
+    let mut all_idx: Vec<usize> = (0..N_TOTAL).collect();
+    all_idx.sort_unstable_by_key(|&k| (user_idxs[k], dates[k], item_idxs[k]));
+
+    let mut fulltrain_user_idxs: Vec<i32> = Vec::with_capacity(N_TOTAL);
+    let mut fulltrain_item_idxs: Vec<i16> = Vec::with_capacity(N_TOTAL);
+    let mut fulltrain_ratings: Vec<i8> = Vec::with_capacity(N_TOTAL);
+    let mut fulltrain_dates: Vec<i16> = Vec::with_capacity(N_TOTAL);
+    let mut train_user_idxs: Vec<i32> = Vec::with_capacity(n_train);
+    let mut train_item_idxs: Vec<i16> = Vec::with_capacity(n_train);
+    let mut train_ratings: Vec<i8> = Vec::with_capacity(n_train);
+    let mut train_dates: Vec<i16> = Vec::with_capacity(n_train);
+
+    for &k in all_idx.iter().progress() {
+        let u = user_idxs[k];
+        let i = item_idxs[k];
+        let r = ratings[k];
+        let d = dates[k];
+        fulltrain_user_idxs.push(u);
+        fulltrain_item_idxs.push(i);
+        fulltrain_ratings.push(r);
+        fulltrain_dates.push(d);
         if !is_probe[k] {
-            train_idx.push(k);
+            train_user_idxs.push(u);
+            train_item_idxs.push(i);
+            train_ratings.push(r);
+            train_dates.push(d);
         }
     }
-    assert_eq!(train_idx.len(), n_train);
+    drop(all_idx);
 
-    train_idx.sort_unstable_by_key(|&k| (user_idxs[k], dates[k], item_idxs[k]));
-
-    let train_user_idxs: Vec<i32> = train_idx.iter().map(|&k| user_idxs[k]).collect();
-    let train_item_idxs: Vec<i16> = train_idx.iter().map(|&k| item_idxs[k]).collect();
-    let train_ratings: Vec<i8> = train_idx.iter().map(|&k| ratings[k]).collect();
-    let train_dates: Vec<i16> = train_idx.iter().map(|&k| dates[k]).collect();
-    drop(train_idx);
-    drop(user_idxs);
-    drop(item_idxs);
-    drop(ratings);
-    drop(dates);
-    drop(is_probe);
-
-    // ---- Phase 6: build probe arrays ----
-    println!("Phase 6/8: Build probe arrays");
+    // ---- Phase 7: build probe arrays ----
+    println!("Phase 7/10: Build probe arrays");
     let mut probe_user_idxs: Vec<i32> = Vec::with_capacity(N_PROBE);
     let mut probe_item_idxs: Vec<i16> = Vec::with_capacity(N_PROBE);
     let mut probe_ratings: Vec<i8> = Vec::with_capacity(N_PROBE);
@@ -206,9 +240,33 @@ fn main() {
     }
     drop(probe_lookup);
     drop(probe_groups);
+    drop(user_idxs);
+    drop(item_idxs);
+    drop(ratings);
+    drop(dates);
+    drop(is_probe);
 
-    // ---- Phase 7: counts + item_years ----
-    println!("Phase 7/8: Counts & item_years");
+    // ---- Phase 8: load qual_ratings.csv ----
+    println!("Phase 8/10: Load qual_ratings.csv");
+    let mut qual_ratings: Vec<i8> = Vec::with_capacity(N_QUAL);
+    let mut qual_is_test: Vec<i8> = Vec::with_capacity(N_QUAL);
+    let mut header_seen = false;
+    read_lines(QUAL_RATINGS_CSV, |line| {
+        if !header_seen {
+            header_seen = true;
+            return;
+        }
+        let comma = line.iter().position(|&c| c == b',').unwrap();
+        let r = parse_u32(&line[..comma]) as i8;
+        let t = parse_u32(&line[comma + 1..]) as i8;
+        qual_ratings.push(r);
+        qual_is_test.push(t);
+    });
+    assert_eq!(qual_ratings.len(), N_QUAL);
+    assert_eq!(qual_is_test.len(), N_QUAL);
+
+    // ---- Phase 9: counts + item_years ----
+    println!("Phase 9/10: Counts & item_years");
     let mut train_user_cnts = vec![0i32; N_USERS];
     let mut train_item_cnts = vec![0i32; N_ITEMS];
     for k in (0..n_train).progress() {
@@ -220,6 +278,18 @@ fn main() {
     for k in (0..N_PROBE).progress() {
         probe_user_cnts[probe_user_idxs[k] as usize] += 1;
         probe_item_cnts[probe_item_idxs[k] as usize] += 1;
+    }
+    let mut fulltrain_user_cnts = vec![0i32; N_USERS];
+    let mut fulltrain_item_cnts = vec![0i32; N_ITEMS];
+    for k in (0..N_TOTAL).progress() {
+        fulltrain_user_cnts[fulltrain_user_idxs[k] as usize] += 1;
+        fulltrain_item_cnts[fulltrain_item_idxs[k] as usize] += 1;
+    }
+    let mut qual_user_cnts = vec![0i32; N_USERS];
+    let mut qual_item_cnts = vec![0i32; N_ITEMS];
+    for k in (0..N_QUAL).progress() {
+        qual_user_cnts[qual_user_idxs[k] as usize] += 1;
+        qual_item_cnts[qual_item_idxs[k] as usize] += 1;
     }
 
     let mut item_years = vec![0i32; N_ITEMS];
@@ -244,15 +314,18 @@ fn main() {
     item_years[16677] = 2004;
     item_years[17666] = 1999;
 
-    // ---- Phase 8: save ----
-    println!("Phase 8/8: Save");
+    // ---- Phase 10: save ----
+    println!("Phase 10/10: Save");
     fs::create_dir_all(TRAIN_OUT).unwrap();
     fs::create_dir_all(PROBE_OUT).unwrap();
+    fs::create_dir_all(FULLTRAIN_OUT).unwrap();
+    fs::create_dir_all(QUAL_OUT).unwrap();
 
     let uidx_to_uid: Vec<i32> = sorted_uids.iter().map(|&x| x as i32).collect();
     let iidx_to_iid: Vec<i16> = (1..=N_ITEMS as i16).collect();
     let train_is_test = vec![0i8; n_train];
     let probe_is_test = vec![0i8; N_PROBE];
+    let fulltrain_is_test = vec![0i8; N_TOTAL];
 
     macro_rules! save {
         ($dir:expr, $name:expr, $vec:expr) => {
@@ -268,8 +341,8 @@ fn main() {
     save!(TRAIN_OUT, "user_cnts", train_user_cnts);
     save!(TRAIN_OUT, "item_cnts", train_item_cnts);
     save!(TRAIN_OUT, "item_years", item_years.clone());
-    save!(TRAIN_OUT, "uidx_to_uid", uidx_to_uid);
-    save!(TRAIN_OUT, "iidx_to_iid", iidx_to_iid);
+    save!(TRAIN_OUT, "uidx_to_uid", uidx_to_uid.clone());
+    save!(TRAIN_OUT, "iidx_to_iid", iidx_to_iid.clone());
 
     save!(PROBE_OUT, "user_idxs", probe_user_idxs);
     save!(PROBE_OUT, "item_idxs", probe_item_idxs);
@@ -278,7 +351,33 @@ fn main() {
     save!(PROBE_OUT, "is_test", probe_is_test);
     save!(PROBE_OUT, "user_cnts", probe_user_cnts);
     save!(PROBE_OUT, "item_cnts", probe_item_cnts);
-    save!(PROBE_OUT, "item_years", item_years);
+    save!(PROBE_OUT, "item_years", item_years.clone());
 
-    println!("Done. {}: {} ratings, {}: {} ratings", TRAIN_OUT, n_train, PROBE_OUT, N_PROBE);
+    save!(FULLTRAIN_OUT, "user_idxs", fulltrain_user_idxs);
+    save!(FULLTRAIN_OUT, "item_idxs", fulltrain_item_idxs);
+    save!(FULLTRAIN_OUT, "ratings", fulltrain_ratings);
+    save!(FULLTRAIN_OUT, "dates", fulltrain_dates);
+    save!(FULLTRAIN_OUT, "is_test", fulltrain_is_test);
+    save!(FULLTRAIN_OUT, "user_cnts", fulltrain_user_cnts);
+    save!(FULLTRAIN_OUT, "item_cnts", fulltrain_item_cnts);
+    save!(FULLTRAIN_OUT, "item_years", item_years.clone());
+    save!(FULLTRAIN_OUT, "uidx_to_uid", uidx_to_uid);
+    save!(FULLTRAIN_OUT, "iidx_to_iid", iidx_to_iid);
+
+    save!(QUAL_OUT, "user_idxs", qual_user_idxs);
+    save!(QUAL_OUT, "item_idxs", qual_item_idxs);
+    save!(QUAL_OUT, "ratings", qual_ratings);
+    save!(QUAL_OUT, "dates", qual_dates);
+    save!(QUAL_OUT, "is_test", qual_is_test);
+    save!(QUAL_OUT, "user_cnts", qual_user_cnts);
+    save!(QUAL_OUT, "item_cnts", qual_item_cnts);
+    save!(QUAL_OUT, "item_years", item_years);
+
+    println!(
+        "Done. {}: {}, {}: {}, {}: {}, {}: {} ratings",
+        TRAIN_OUT, n_train,
+        PROBE_OUT, N_PROBE,
+        FULLTRAIN_OUT, N_TOTAL,
+        QUAL_OUT, N_QUAL,
+    );
 }
