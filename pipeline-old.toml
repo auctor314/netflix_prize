@@ -17,7 +17,7 @@ inputs_from = ["ingest"]
 outputs = [
     "{preds}/{name}.{pr}.npy",
     "{preds}/{name}.{fulltrain_pr}.npy",
-    "{preds}/{name}.cfg",
+    "{preds}/{name}.out",
 ]
 cmd = "./target/release/runner --runner {runner} --name {name} --config {config} --target {target} --split {split.name}"
 

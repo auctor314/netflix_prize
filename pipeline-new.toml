@@ -18,6 +18,7 @@ inputs      = ["src/bin/{name}-{split.name}.rs"]
 outputs = [
     "{preds}/{name}.{pr}.npy",
     "{preds}/{name}.{fulltrain_pr}.npy",
+    "{preds}/{name}.out",
 ]
 cmd = "cargo build --release --bin {name}-{split.name} && ./target/release/{name}-{split.name}"
 
@@ -39,6 +40,17 @@ cmd = "./target/release/newsplit"
 
 # --- Base predictors (trained on raw ratings) ---
 [stages."mf-60"]
+kind = "model"
+
+[stages."rbmx2-800bp"]
+kind = "model"
+keep_epochs = [3, 24, 27]
+
+[stages."rbmx2-600"]
+kind = "model"
+keep_epochs = [27]
+
+[stages."rbmx2-500"]
 kind = "model"
 
 # [stages."tsvdx4-64"]  kind="model" runner="tsvdx4p" config="configs/new/tsvdx4-64.toml"  target="rtg"

@@ -35,6 +35,7 @@ struct StageConfig {
     runner: Option<String>,
     config: Option<String>,
     target: Option<String>,
+    keep_epochs: Option<Vec<u32>>,
 }
 
 #[derive(Debug)]
@@ -94,15 +95,40 @@ fn substitute(s: &str, vars: &HashMap<String, String>) -> String {
     out
 }
 
+/// If `keep_epochs` is set, append per-epoch variants of any output template
+/// containing `{name}.{pr}.npy` or `{name}.{fulltrain_pr}.npy`. The original
+/// outputs (final-epoch predictions) stay in the list — keep_epochs is additive.
+fn expand_keep_epochs(outputs: &[String], keep: &[u32]) -> Vec<String> {
+    let mut out = outputs.to_vec();
+    for tpl in outputs {
+        if tpl.contains("{name}.{pr}.npy") || tpl.contains("{name}.{fulltrain_pr}.npy") {
+            for &e in keep {
+                let s = tpl
+                    .replace("{name}.{pr}.npy", &format!("{{name}}_ep{:02}.{{pr}}.npy", e))
+                    .replace(
+                        "{name}.{fulltrain_pr}.npy",
+                        &format!("{{name}}_ep{:02}.{{fulltrain_pr}}.npy", e),
+                    );
+                out.push(s);
+            }
+        }
+    }
+    out
+}
+
 fn resolve_pipeline(p: &Pipeline) -> IndexMap<String, ResolvedStage> {
     let mut out: IndexMap<String, ResolvedStage> = IndexMap::new();
     for (name, stage) in &p.stages {
         let merged = merge_with_defaults(stage, &p.defaults);
         let subst = build_subst_vars(name, &merged, p);
+        let outputs_tpl = match &merged.keep_epochs {
+            Some(epochs) if !epochs.is_empty() => expand_keep_epochs(&merged.outputs, epochs),
+            _ => merged.outputs.clone(),
+        };
         out.insert(name.clone(), ResolvedStage {
             inputs: merged.inputs.iter().map(|s| substitute(s, &subst)).collect(),
             inputs_from: merged.inputs_from.clone(),
-            outputs: merged.outputs.iter().map(|s| substitute(s, &subst)).collect(),
+            outputs: outputs_tpl.iter().map(|s| substitute(s, &subst)).collect(),
             cmd: substitute(&merged.cmd, &subst),
         });
     }
@@ -205,14 +231,88 @@ fn run_stage(stage_name: &str, resolved: &IndexMap<String, ResolvedStage>, force
 }
 
 fn print_help() {
-    println!("Usage: run [-p FILE | -n] [-l] [-f] [STAGE]");
+    println!("Usage: run [-p FILE | -n] [-l] [-c] [-f] [STAGE]");
     println!();
     println!("  -p FILE, --pipeline FILE   pipeline manifest (default: {})", DEFAULT_PIPELINE);
     println!("  -n, --new                  shortcut for -p pipeline-new.toml");
     println!("  -l, --list                 list stages with status (default if no STAGE)");
-    println!("  -f, --force                re-run STAGE even if its status is DONE");
+    println!("  -c, --clean                list (or delete with -f) files in preds/features");
+    println!("                             dirs not referenced by any active stage");
+    println!("  -f, --force                re-run STAGE even if DONE; or actually delete with --clean");
     println!("  -h, --help                 show this help");
     println!("  STAGE                      run the named stage");
+}
+
+fn cmd_clean(p: &Pipeline, resolved: &IndexMap<String, ResolvedStage>, force: bool) -> ExitCode {
+    use std::collections::HashSet;
+
+    // Protected paths: union of all outputs and all inputs (including inputs_from-derived).
+    let mut protected: HashSet<String> = HashSet::new();
+    for (_, s) in resolved {
+        for o in &s.outputs { protected.insert(o.clone()); }
+        for i in &s.inputs { protected.insert(i.clone()); }
+        for up in &s.inputs_from {
+            if let Some(us) = resolved.get(up) {
+                for o in &us.outputs { protected.insert(o.clone()); }
+            }
+        }
+    }
+
+    // Directories to scan: those declared in [split] under "preds" / "features".
+    let mut dirs: Vec<String> = Vec::new();
+    if let Some(d) = p.split.get("preds") { dirs.push(d.clone()); }
+    if let Some(d) = p.split.get("features") { dirs.push(d.clone()); }
+
+    let mut candidates: Vec<String> = Vec::new();
+    for dir in &dirs {
+        if !Path::new(dir).is_dir() { continue; }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() { continue; }
+            let path_str = path.to_string_lossy().to_string();
+            if !protected.contains(&path_str) {
+                candidates.push(path_str);
+            }
+        }
+    }
+    candidates.sort();
+
+    if candidates.is_empty() {
+        println!("No deletion candidates.");
+        return ExitCode::SUCCESS;
+    }
+
+    let n = candidates.len();
+    println!("{} candidate{} for deletion:", n, if n == 1 { "" } else { "s" });
+    for c in &candidates {
+        println!("  {}", c);
+    }
+
+    if !force {
+        println!();
+        println!("Dry run. Use --clean -f to delete.");
+        return ExitCode::SUCCESS;
+    }
+
+    println!();
+    println!("Deleting...");
+    let mut errs = 0;
+    for c in &candidates {
+        if let Err(e) = std::fs::remove_file(c) {
+            eprintln!("  error deleting {}: {}", c, e);
+            errs += 1;
+        }
+    }
+    if errs > 0 {
+        eprintln!("{} deletion(s) failed.", errs);
+        return ExitCode::from(1);
+    }
+    println!("Deleted {} file{}.", n, if n == 1 { "" } else { "s" });
+    ExitCode::SUCCESS
 }
 
 fn main() -> ExitCode {
@@ -220,6 +320,7 @@ fn main() -> ExitCode {
     let mut stage_arg: Option<String> = None;
     let mut force_list = false;
     let mut force = false;
+    let mut clean_mode = false;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -228,6 +329,7 @@ fn main() -> ExitCode {
             "-h" | "--help" => { print_help(); return ExitCode::SUCCESS; }
             "-l" | "--list" => { force_list = true; i += 1; }
             "-f" | "--force" => { force = true; i += 1; }
+            "-c" | "--clean" => { clean_mode = true; i += 1; }
             "-n" | "--new" => { pipeline_path = "pipeline-new.toml".to_string(); i += 1; }
             "-p" | "--pipeline" => {
                 if i + 1 >= args.len() {
@@ -268,6 +370,13 @@ fn main() -> ExitCode {
         }
     };
     let resolved = resolve_pipeline(&pipeline);
+
+    if clean_mode {
+        if stage_arg.is_some() {
+            eprintln!("warning: STAGE argument ignored with --clean");
+        }
+        return cmd_clean(&pipeline, &resolved, force);
+    }
 
     match stage_arg {
         Some(name) => {
