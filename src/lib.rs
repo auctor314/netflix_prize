@@ -13,13 +13,14 @@ pub fn suppress_progress() { NO_PROGRESS.store(true, Ordering::Relaxed); }
 
 #[macro_export]
 macro_rules! progress {
-    ($e:expr) => {
-        $e.progress_with(if $crate::NO_PROGRESS.load(::std::sync::atomic::Ordering::Relaxed) {
-            indicatif::ProgressBar::hidden()
+    ($e:expr) => {{
+        let __iter = $e;
+        if $crate::NO_PROGRESS.load(::std::sync::atomic::Ordering::Relaxed) {
+            __iter.progress_with(indicatif::ProgressBar::hidden())
         } else {
-            indicatif::ProgressBar::new_spinner()
-        })
-    };
+            __iter.progress()
+        }
+    }};
 }
 #[macro_export]
 macro_rules! progress_count {
@@ -713,7 +714,7 @@ pub fn fit<M: Regressor + Sync>(
 
 /// Train/probe/qual split convention. Constants:
 /// - `SPLIT_OLD` = train → probe, fulltrain → qual, preds_dir = "preds", features_dir = "features"
-/// - `SPLIT_NEW` = trainx → probex, fulltrain → qual, preds_dir = "predsx", features_dir = "featuresx"
+/// - `SPLIT_NEW` = trainx → probex, fulltrain → qual, preds_dir = "preds_new", features_dir = "features_new"
 #[derive(Debug, Clone, Copy)]
 pub struct Split {
     pub tr: &'static str,
@@ -734,8 +735,8 @@ pub const SPLIT_OLD: Split = Split {
 pub const SPLIT_NEW: Split = Split {
     tr: "trainx", pr: "probex",
     fulltrain_tr: "fulltrain", fulltrain_pr: "qual",
-    preds_dir: "predsx",
-    features_dir: "featuresx",
+    preds_dir: "preds_new",
+    features_dir: "features_new",
 };
 
 /// Optional flags for `fit2_inner` / `fit2!`.
@@ -777,6 +778,8 @@ pub fn fit2_inner<M: Regressor + Sync>(
     let Fit2Opts { save_train, save_probe_each_epoch, save_subscores, no_fulltrain, transpose } = opts;
     let preds_dir = split.preds_dir;
 
+    std::fs::create_dir_all(preds_dir).unwrap();
+
     // Open log file (only if not already open, e.g. from fit3)
     let owns_log = LOG_FILE.lock().unwrap().is_none();
     if owns_log {
@@ -786,6 +789,7 @@ pub fn fit2_inner<M: Regressor + Sync>(
     }
 
     teeln!("[{}]", model_name);
+    teeln!("target = {:?}", target);
     teeln!("{:?}", cfg);
 
     // Phase 1: split.tr → split.pr  (scoped to free model + datasets before phase 2)
@@ -860,11 +864,11 @@ pub fn fit2_inner<M: Regressor + Sync>(
         }
     } // model, tr, pr freed here
 
-    // Save config
-    let mut f = File::create(format!("{}/{}.cfg", preds_dir, model_name)).unwrap();
-    writeln!(f, "target = {:#?}", target).unwrap();
-    writeln!(f, "cfg = {:#?}", cfg).unwrap();
-    drop(f);
+    // Save config — disabled; details live in the per-stage src/bin/<name>-<split>.rs binary.
+    // let mut f = File::create(format!("{}/{}.cfg", preds_dir, model_name)).unwrap();
+    // writeln!(f, "target = {:#?}", target).unwrap();
+    // writeln!(f, "cfg = {:#?}", cfg).unwrap();
+    // drop(f);
 
     // Phase 2: split.fulltrain_tr → split.fulltrain_pr
     if !no_fulltrain {

@@ -204,10 +204,10 @@ pub fn save_nbstats(rtg: &str, stat: &str) {
     save_nbstats_split(rtg, stat, "preds", "train", "probe");
 }
 
-/// Save nbstats for the alternative pipeline: `predsx` predictions over
+/// Save nbstats for the alternative pipeline: `preds_new` predictions over
 /// `trainx`+`probex` and over `fulltrain`+`qual`.
 pub fn save_nbstatsx(rtg: &str, stat: &str) {
-    save_nbstats_split(rtg, stat, "predsx", "trainx", "probex");
+    save_nbstats_split(rtg, stat, "preds_new", "trainx", "probex");
 }
 
 /// Save nbstats for a (target spec, stat name, preds dir, tr/pr pair) — covers

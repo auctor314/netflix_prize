@@ -1,5 +1,5 @@
 # Pipeline manifest — SPLIT_NEW
-# Data: data/{trainx,probex,fulltrain,qual}/   Outputs: predsx/, featuresx/
+# Data: data/{trainx,probex,fulltrain,qual}/   Outputs: preds_new/, features_new/
 
 [split]
 name         = "new"
@@ -7,67 +7,73 @@ tr           = "trainx"
 pr           = "probex"
 fulltrain_tr = "fulltrain"
 fulltrain_pr = "qual"
-preds        = "predsx"
-features     = "featuresx"
+preds        = "preds_new"
+features     = "features_new"
 
 # --- Defaults per stage kind ---
 
 [defaults.model]
-inputs_from = ["convert_raw"]
+inputs_from = ["ingest", "newsplit"]
+inputs      = ["src/bin/{name}-{split.name}.rs"]
 outputs = [
     "{preds}/{name}.{pr}.npy",
     "{preds}/{name}.{fulltrain_pr}.npy",
-    "{preds}/{name}.cfg",
 ]
-cmd = "./target/release/runner --runner {runner} --name {name} --config {config} --target {target} --split {split.name}"
+cmd = "cargo build --release --bin {name}-{split.name} && ./target/release/{name}-{split.name}"
 
 [defaults.blend]
 outputs = ["{preds}/{name}.{pr}.npy", "{preds}/{name}.{fulltrain_pr}.npy"]
 
 # --- Data preparation ---
 
-[stages.convert_raw]
-inputs  = ["raw/training_set.tar", "raw/probe.txt", "raw/qualifying.txt", "scripts/convert_new.py"]
-outputs = ["data/{tr}/", "data/{pr}/", "data/{fulltrain_tr}/", "data/{fulltrain_pr}/"]
-cmd = "python scripts/convert_new.py"
+[stages.ingest]
+inputs  = ["data/raw/", "data/qual_ratings/qual_ratings.csv", "src/bin/ingest.rs"]
+outputs = ["data/train/", "data/probe/", "data/fulltrain/", "data/qual/"]
+cmd = "./target/release/ingest"
+
+[stages.newsplit]
+inputs_from = ["ingest"]
+inputs  = ["src/bin/newsplit.rs"]
+outputs = ["data/{tr}/", "data/{pr}/"]
+cmd = "./target/release/newsplit"
 
 # --- Base predictors (trained on raw ratings) ---
-[stages."tsvdx4-64"]  kind="model" runner="tsvdx4p" config="configs/new/tsvdx4-64.toml"  target="rtg"
-[stages."tsvdx4-128"] kind="model" runner="tsvdx4p" config="configs/new/tsvdx4-128.toml" target="rtg"
-[stages."mf-10u"]     kind="model" runner="mf"      config="configs/new/mf-10u.toml"     target="rtg"
-[stages."rx-128"]     kind="model" runner="rx"      config="configs/new/rx-128.toml"     target="rtg"
+# [stages."tsvdx4-64"]  kind="model" runner="tsvdx4p" config="configs/new/tsvdx4-64.toml"  target="rtg"
+# [stages."tsvdx4-128"] kind="model" runner="tsvdx4p" config="configs/new/tsvdx4-128.toml" target="rtg"
+# [stages."mf-10u"]     kind="model" runner="mf"      config="configs/new/mf-10u.toml"     target="rtg"
+# [stages."rx-128"]     kind="model" runner="rx"      config="configs/new/rx-128.toml"     target="rtg"
 
 # --- Residual chains (target = "w*<stage>" auto-extends inputs_from) ---
-[stages."tsvdx4-64__knnf"] kind="model" runner="knnf" config="configs/new/knnf.toml" target="1.0*tsvdx4-64"
-[stages."tsvdx4-64__knn3"] kind="model" runner="knn3" config="configs/new/knn3.toml" target="1.0*tsvdx4-64"
+# [stages."tsvdx4-64__knnf"] kind="model" runner="knnf" config="configs/new/knnf.toml" target="1.0*tsvdx4-64"
+# [stages."tsvdx4-64__knn3"] kind="model" runner="knn3" config="configs/new/knn3.toml" target="1.0*tsvdx4-64"
 
 # --- FWLS features (per-rating feature columns; explicit outputs) ---
-[stages.fwls_features]
-inputs_from = ["convert_raw"]
-outputs = [
-    "{features}/fwls_user_cnt.{pr}.npy",   "{features}/fwls_item_cnt.{pr}.npy",
-    "{features}/fwls_user_cnt.{fulltrain_pr}.npy", "{features}/fwls_item_cnt.{fulltrain_pr}.npy",
-]
-cmd = "./target/release/fwls_features --split {split.name}"
+# [stages.fwls_features]
+# inputs_from = ["ingest", "newsplit"]
+# outputs = [
+#     "{features}/fwls_user_cnt.{pr}.npy",   "{features}/fwls_item_cnt.{pr}.npy",
+#     "{features}/fwls_user_cnt.{fulltrain_pr}.npy", "{features}/fwls_item_cnt.{fulltrain_pr}.npy",
+# ]
+# cmd = "./target/release/fwls_features --split {split.name}"
 
 # --- First-level blends ---
-[stages.blend_ridge]
-kind="blend" config="configs/new/blend_ridge.toml"
-inputs_from=["tsvdx4-64", "tsvdx4-128", "tsvdx4-64__knnf", "tsvdx4-64__knn3", "mf-10u", "rx-128"]
-cmd="python blending/blend.py --config {config} --split {split.name}"
+# [stages.blend_ridge]
+# kind="blend" config="configs/new/blend_ridge.toml"
+# inputs_from=["tsvdx4-64", "tsvdx4-128", "tsvdx4-64__knnf", "tsvdx4-64__knn3", "mf-10u", "rx-128"]
+# cmd="python blending/blend.py --config {config} --split {split.name}"
 
-[stages.fwls_blend]
-kind="blend" config="configs/new/fwls.toml"
-inputs_from=["fwls_features", "tsvdx4-64", "mf-10u", "rx-128"]
-cmd="python blending/fwls.py --config {config} --split {split.name}"
+# [stages.fwls_blend]
+# kind="blend" config="configs/new/fwls.toml"
+# inputs_from=["fwls_features", "tsvdx4-64", "mf-10u", "rx-128"]
+# cmd="python blending/fwls.py --config {config} --split {split.name}"
 
-[stages.mlp_blend]
-kind="blend" config="configs/new/mlp.toml"
-inputs_from=["tsvdx4-64", "tsvdx4-128", "tsvdx4-64__knnf", "mf-10u", "rx-128"]
-cmd="python blending/mlp.py --config {config} --split {split.name}"
+# [stages.mlp_blend]
+# kind="blend" config="configs/new/mlp.toml"
+# inputs_from=["tsvdx4-64", "tsvdx4-128", "tsvdx4-64__knnf", "mf-10u", "rx-128"]
+# cmd="python blending/mlp.py --config {config} --split {split.name}"
 
 # --- Final ensemble ---
-[stages.final]
-kind="blend" config="configs/new/final.toml"
-inputs_from=["blend_ridge", "fwls_blend", "mlp_blend"]
-cmd="python blending/final.py --config {config} --split {split.name}"
+# [stages.final]
+# kind="blend" config="configs/new/final.toml"
+# inputs_from=["blend_ridge", "fwls_blend", "mlp_blend"]
+# cmd="python blending/final.py --config {config} --split {split.name}"
