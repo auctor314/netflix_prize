@@ -17,7 +17,7 @@ fn main() {
         reset_u_epoch: 10,
         item_feat_npy: None,
         ordinal_head: None,
-        save_ifeat: true,
+        save_ifeat: false,
     };
     fit2!(MfModel, cfg, "rtg", "mf-60", SPLIT_NEW);
 }

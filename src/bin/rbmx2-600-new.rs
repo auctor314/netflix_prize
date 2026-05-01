@@ -24,7 +24,7 @@ fn main() {
         cd_max: 5,
         use_conditional: true,
         r_include_pr_all: true,
-        save_w: true,
+        save_w: false,
         n_factors: None,
         n_freq_bins: 8,
         lr_bif: 0.0,

@@ -36,6 +36,8 @@ struct StageConfig {
     config: Option<String>,
     target: Option<String>,
     keep_epochs: Option<Vec<u32>>,
+    #[serde(default)]
+    extras: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -64,6 +66,41 @@ fn merge_with_defaults(stage: &StageConfig, defaults: &HashMap<String, StageConf
         }
     }
     merged
+}
+
+/// Expand `extras = ["@train_preds", "@ifeat", ...]` into auto-inputs.
+/// `@train_preds` adds `<base>.{tr}.npy` and `<base>.{fulltrain_tr}.npy`;
+/// `@ifeat` adds `<base>.ifeat.{tr}.npy` and `<base>.ifeat.{fulltrain_tr}.npy`.
+/// Base is the stage name's prefix before `__`. When `extras` is non-empty,
+/// `inputs_from = [base]` is also auto-added (if not already present).
+fn expand_extras(stage_name: &str, stage: &mut StageConfig) {
+    if stage.extras.is_empty() { return; }
+    let base = match stage_name.split_once("__") {
+        Some((b, _)) if !b.is_empty() => b.to_string(),
+        _ => panic!("'extras' on stage '{}' but no '__'-base found", stage_name),
+    };
+    if !stage.inputs_from.contains(&base) {
+        stage.inputs_from.push(base.clone());
+    }
+    for ex in stage.extras.clone() {
+        let auto: Vec<String> = match ex.as_str() {
+            "@train_preds" => vec![
+                format!("{{preds}}/{}.{{tr}}.npy", base),
+                format!("{{preds}}/{}.{{fulltrain_tr}}.npy", base),
+            ],
+            "@ifeat" => vec![
+                format!("{{preds}}/{}.ifeat.{{tr}}.npy", base),
+                format!("{{preds}}/{}.ifeat.{{fulltrain_tr}}.npy", base),
+            ],
+            other => panic!(
+                "unknown extras keyword '{}' on stage '{}' (expected one of: @train_preds, @ifeat)",
+                other, stage_name,
+            ),
+        };
+        for inp in auto {
+            if !stage.inputs.contains(&inp) { stage.inputs.push(inp); }
+        }
+    }
 }
 
 fn build_subst_vars(stage_name: &str, stage: &StageConfig, pipeline: &Pipeline) -> HashMap<String, String> {
@@ -119,7 +156,8 @@ fn expand_keep_epochs(outputs: &[String], keep: &[u32]) -> Vec<String> {
 fn resolve_pipeline(p: &Pipeline) -> IndexMap<String, ResolvedStage> {
     let mut out: IndexMap<String, ResolvedStage> = IndexMap::new();
     for (name, stage) in &p.stages {
-        let merged = merge_with_defaults(stage, &p.defaults);
+        let mut merged = merge_with_defaults(stage, &p.defaults);
+        expand_extras(name, &mut merged);
         let subst = build_subst_vars(name, &merged, p);
         let outputs_tpl = match &merged.keep_epochs {
             Some(epochs) if !epochs.is_empty() => expand_keep_epochs(&merged.outputs, epochs),
