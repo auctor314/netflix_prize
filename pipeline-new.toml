@@ -38,6 +38,9 @@ outputs = ["data/{tr}/", "data/{pr}/"]
 cmd = "./target/release/newsplit"
 
 # --- Base predictors (trained on raw ratings) ---
+[stages."mf-60"]
+kind = "model"
+
 # [stages."tsvdx4-64"]  kind="model" runner="tsvdx4p" config="configs/new/tsvdx4-64.toml"  target="rtg"
 # [stages."tsvdx4-128"] kind="model" runner="tsvdx4p" config="configs/new/tsvdx4-128.toml" target="rtg"
 # [stages."mf-10u"]     kind="model" runner="mf"      config="configs/new/mf-10u.toml"     target="rtg"
