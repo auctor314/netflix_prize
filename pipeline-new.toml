@@ -43,6 +43,10 @@ cmd = "./target/release/newsplit"
 [stages."mf-60"]
 kind = "model"
 
+[stages."mf-60__knn3"]
+kind = "model"
+extras = ["@train_preds"]
+
 [stages."rbmx2-800bp"]
 kind = "model"
 keep_epochs = [3, 24, 27]
@@ -53,6 +57,13 @@ keep_epochs = [27]
 
 [stages."rbmx2-500"]
 kind = "model"
+
+[stages."rbmx2-400"]
+kind = "model"
+
+[stages."rbmx2-400__knnf"]
+kind = "model"
+extras = ["@train_preds", "@ifeat"]
 
 [stages."rbmx2-500__knnf"]
 kind = "model"

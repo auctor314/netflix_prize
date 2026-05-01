@@ -19,5 +19,5 @@ fn main() {
         ordinal_head: None,
         save_ifeat: false,
     };
-    fit2!(MfModel, cfg, "rtg", "mf-60", SPLIT_NEW);
+    fit2!(MfModel, cfg, "rtg", "mf-60", SPLIT_NEW, save_train: true);
 }
